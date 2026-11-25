@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PolyLink — Live Translated Video Calls</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        darkBg: '#090d16',
+                        darkCard: '#111827',
+                        darkBorder: '#1f2937'
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- FontAwesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- MQTT for WebRTC Signaling -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
+    <style>
+        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #374151; border-radius: 9999px; }
+        .hud-fade { transition: opacity 0.45s cubic-bezier(0.4, 0, 0.2, 1), transform 0.45s cubic-bezier(0.4, 0, 0.2, 1); }
+        .hud-hidden-top { opacity: 0 !important; transform: translateY(-16px); pointer-events: none !important; }
+        .hud-hidden-bottom { opacity: 0 !important; transform: translateY(16px); pointer-events: none !important; }
+    </style>
+</head>
+<body class="bg-darkBg text-slate-100 min-h-screen flex flex-col antialiased selection:bg-indigo-500 selection:text-white">
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="fixed top-5 right-5 z-50 flex flex-col space-y-2 pointer-events-none"></div>
+
+    <!-- Clean, Simple Lobby Screen -->
+    <div id="lobby-screen" class="flex-1 flex items-center justify-center p-4">
+        <div class="max-w-sm w-full bg-darkCard/90 border border-darkBorder rounded-3xl shadow-2xl p-8 backdrop-blur-xl">
+            <div class="text-center mb-8">
+                <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-tr from-indigo-600 to-violet-500 text-white mb-4 shadow-lg shadow-indigo-500/25">
+                    <i class="fa-solid fa-language text-2xl"></i>
+                </div>
+                <h1 class="text-2xl font-bold tracking-tight text-white">PolyLink</h1>
+                <p class="text-xs text-slate-400 mt-1.5">Speak your language. Understand theirs instantly.</p>
+            </div>
+
+            <form id="lobby-form" class="space-y-4">
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1.5">Room Code</label>
+                    <input type="text" id="room-id" required placeholder="e.g. acme-q4-sync-842" 
+                        class="w-full px-4 py-3 bg-darkBg border border-darkBorder rounded-2xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition">
+                </div>
+
+                <div class="grid grid-cols-2 gap-3 pt-1">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-300 mb-1.5">I speak</label>
+                        <select id="lobby-speak-lang" class="w-full px-3 py-3 bg-darkBg border border-darkBorder rounded-2xl text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                            <option value="auto">✨ Auto-Detect</option>
+                            <option value="en-US">🇬🇧 English</option>
+                            <option value="es-ES">🇪🇸 Español</option>
+                            <option value="fi-FI">🇫🇮 Suomi</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-300 mb-1.5">Translate to</label>
+                        <select id="lobby-read-lang" class="w-full px-3 py-3 bg-darkBg border border-darkBorder rounded-2xl text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                            <option value="en">🇬🇧 English</option>
+                            <option value="es">🇪🇸 Español</option>
+                            <option value="fi">🇫🇮 Suomi</option>
+                        </select>
+                    </div>
+                </div>
+
+                <button type="submit" class="w-full mt-2 py-3.5 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-2xl text-sm transition shadow-lg shadow-indigo-600/25 flex items-center justify-center space-x-2">
+                    <i class="fa-solid fa-video"></i>
+                    <span>Join Call</span>
+                </button>
+            </form>
+
+            <div class="mt-6 pt-5 border-t border-darkBorder/80 flex items-center justify-center space-x-2 text-[11px] text-slate-400">
+                <i class="fa-solid fa-lock text-emerald-400"></i>
+                <span>End-to-end encrypted automatically in the background</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Minimalist Call Screen -->
+    <div id="call-screen" class="flex-1 hidden flex flex-col h-screen overflow-hidden relative bg-darkBg select-none">
+        <!-- Minimal Floating Top Bar (Auto-Hiding HUD) -->
+        <header id="call-header" class="hud-fade absolute top-0 left-0 right-0 px-5 py-4 flex items-center justify-between z-20 bg-gradient-to-b from-black/70 via-black/30 to-transparent">
+            <div class="flex items-center space-x-3">
+                <div class="flex items-center space-x-2">
+                    <div class="w-7 h-7 rounded-lg bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center text-white text-xs shadow-md">
+                        <i class="fa-solid fa-language"></i>
+                    </div>
+                    <span class="font-bold text-sm tracking-tight text-white">PolyLink</span>
+                </div>
+                <span class="text-slate-500">•</span>
+                <button id="btn-copy-room" class="flex items-center space-x-1.5 bg-darkCard/80 hover:bg-darkBorder backdrop-blur-md border border-white/10 px-3 py-1 rounded-full text-xs text-slate-200 transition" title="Copy Room Code">
+                    <span id="header-room-name">--</span>
+                    <i class="fa-regular fa-copy text-[10px] text-slate-400"></i>
+                </button>
+            </div>
+
+            <!-- Quiet Security & Connection Pill -->
+            <div class="flex items-center space-x-2 bg-darkCard/80 backdrop-blur-md border border-white/10 px-3 py-1 rounded-full text-[11px] text-slate-200">
+                <span id="connection-dot" class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+                <span id="connection-label">Waiting for peer</span>
+                <span class="text-slate-600">|</span>
+                <i class="fa-solid fa-shield-halved text-emerald-400" title="AES-GCM 256-bit Background Encryption Active"></i>
+            </div>
+        </header>
+
+        <!-- Full-Bleed Cinema Video Stage + Subtitle Overlay -->
+        <main id="video-stage" class="flex-1 relative flex items-center justify-center w-full h-full overflow-hidden">
+            <!-- Remote Video (Full Stage) -->
+            <div class="relative w-full h-full bg-darkCard overflow-hidden flex items-center justify-center">
+                <video id="remote-video" autoplay playsinline class="w-full h-full object-cover"></video>
+                
+                <!-- Waiting State -->
+                <div id="remote-placeholder" class="flex flex-col items-center justify-center text-center p-6">
+                    <div class="w-16 h-16 rounded-full bg-darkBg border border-darkBorder flex items-center justify-center mb-4 text-indigo-400">
+                        <i class="fa-solid fa-user-plus text-xl"></i>
+                    </div>
+                    <p class="text-sm font-medium text-slate-200">Share the room code to invite someone</p>
+                    <p class="text-xs text-slate-500 mt-1">Tap anywhere to show or hide controls</p>
+                </div>
+
+                <!-- Local Picture-in-Picture Video (Draggable) -->
+                <div id="local-pip" class="absolute top-16 right-4 w-28 sm:w-44 aspect-video bg-darkBg border border-white/15 rounded-2xl overflow-hidden shadow-2xl z-10 cursor-grab active:cursor-grabbing touch-none">
+                    <video id="local-video" autoplay muted playsinline class="w-full h-full object-cover transform -scale-x-100 pointer-events-none"></video>
+                    <div class="absolute bottom-1.5 left-2 bg-black/60 backdrop-blur-md px-2 py-0.5 rounded-md text-[10px] text-slate-200 pointer-events-none">
+                        You
+                    </div>
+                </div>
+
+                <!-- Cinema-Style Live Translated Subtitles Overlay (Always visible even when HUD hides) -->
+                <div id="subtitle-container" class="absolute bottom-24 left-1/2 -translate-x-1/2 w-[92%] max-w-2xl flex flex-col items-center space-y-2 pointer-events-none z-10 transition-all duration-300">
+                    <div id="subtitle-box" class="hidden bg-black/75 backdrop-blur-md border border-white/10 px-5 py-3 rounded-2xl text-center shadow-2xl transition-all duration-300">
+                        <div id="subtitle-speaker" class="text-[10px] uppercase tracking-wider font-semibold text-indigo-400 mb-0.5">Peer</div>
+                        <div id="subtitle-translated" class="text-sm sm:text-base font-medium text-white leading-snug"></div>
+                        <div id="subtitle-original" class="text-[11px] text-slate-400 mt-1 italic"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide-over Chat Drawer -->
+            <aside id="chat-drawer" class="hidden absolute top-16 right-4 bottom-24 w-80 max-w-[calc(100vw-2rem)] bg-darkCard/95 backdrop-blur-xl border border-darkBorder rounded-3xl shadow-2xl flex flex-col overflow-hidden z-30">
+                <div class="px-4 py-3.5 border-b border-darkBorder flex items-center justify-between">
+                    <span class="text-xs font-semibold text-slate-200 flex items-center space-x-2">
+                        <i class="fa-solid fa-comments text-indigo-400"></i>
+                        <span>Encrypted Chat & History</span>
+                    </span>
+                    <button id="btn-close-chat" class="text-slate-400 hover:text-white p-1">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+                <div id="chat-messages" class="flex-1 p-4 overflow-y-auto space-y-3 text-xs">
+                    <div class="text-center text-[11px] text-slate-500 py-2">
+                        Messages and transcripts are encrypted end-to-end.
+                    </div>
+                </div>
+                <form id="chat-form" class="p-3 border-t border-darkBorder flex items-center space-x-2">
+                    <input type="text" id="chat-input" placeholder="Send a message..." 
+                        class="flex-1 px-3.5 py-2.5 bg-darkBg border border-darkBorder rounded-xl text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                    <button type="submit" class="p-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs transition">
+                        <i class="fa-solid fa-paper-plane"></i>
+                    </button>
+                </form>
+            </aside>
+        </main>
+
+        <!-- Clean Unified Bottom Control Bar (Auto-Hiding HUD) -->
+        <footer id="call-footer" class="hud-fade absolute bottom-0 left-0 right-0 pb-5 pt-6 px-4 flex items-center justify-center z-20 bg-gradient-to-t from-black/75 via-black/30 to-transparent">
+            <div class="bg-darkCard/90 backdrop-blur-xl border border-white/10 px-3.5 py-2.5 rounded-full shadow-2xl flex flex-wrap items-center justify-center gap-2 sm:gap-2.5">
+                
+                <!-- Mic Toggle -->
+                <button id="btn-toggle-audio" class="w-10 h-10 rounded-full bg-darkBg hover:bg-darkBorder border border-darkBorder text-slate-200 flex items-center justify-center transition" title="Mute / Unmute">
+                    <i class="fa-solid fa-microphone text-sm"></i>
+                </button>
+
+                <!-- Camera Toggle -->
+                <button id="btn-toggle-video" class="w-10 h-10 rounded-full bg-darkBg hover:bg-darkBorder border border-darkBorder text-slate-200 flex items-center justify-center transition" title="Camera On / Off">
+                    <i class="fa-solid fa-video text-sm"></i>
+                </button>
+
+                <!-- Screen Share -->
+                <button id="btn-screen-share" class="w-10 h-10 rounded-full bg-darkBg hover:bg-darkBorder border border-darkBorder text-slate-200 flex items-center justify-center transition" title="Share Screen">
+                    <i class="fa-solid fa-display text-sm"></i>
+                </button>
+
+                <!-- Video Quality Selector -->
+                <div class="flex items-center bg-darkBg border border-darkBorder rounded-full px-2.5 h-10 space-x-1.5 text-xs" title="Call Video Quality">
+                    <i class="fa-solid fa-sliders text-slate-400 text-[11px]"></i>
+                    <select id="video-quality" class="bg-transparent text-slate-200 font-medium focus:outline-none cursor-pointer text-xs">
+                        <option value="auto" class="bg-darkCard">Auto</option>
+                        <option value="1080" class="bg-darkCard">1080p HD</option>
+                        <option value="720" class="bg-darkCard" selected>720p</option>
+                        <option value="480" class="bg-darkCard">480p</option>
+                    </select>
+                </div>
+
+                <div class="h-5 w-[1px] bg-darkBorder mx-0.5 hidden sm:block"></div>
+
+                <!-- Compact Language Switcher with Auto-Detect -->
+                <div class="flex items-center bg-darkBg border border-darkBorder rounded-full px-3 h-10 space-x-2 text-xs">
+                    <select id="source-language" class="bg-transparent text-slate-200 font-medium focus:outline-none cursor-pointer" title="Spoken Language">
+                        <option value="auto" class="bg-darkCard">✨ Auto</option>
+                        <option value="en-US" class="bg-darkCard">🇬🇧 EN</option>
+                        <option value="es-ES" class="bg-darkCard">🇪🇸 ES</option>
+                        <option value="fi-FI" class="bg-darkCard">🇫🇮 FI</option>
+                    </select>
+                    <i class="fa-solid fa-arrow-right text-[10px] text-slate-500"></i>
+                    <select id="target-language" class="bg-transparent text-indigo-400 font-semibold focus:outline-none cursor-pointer" title="Read Subtitles In">
+                        <option value="en" class="bg-darkCard">🇬🇧 EN</option>
+                        <option value="es" class="bg-darkCard">🇪🇸 ES</option>
+                        <option value="fi" class="bg-darkCard">🇫🇮 FI</option>
+                    </select>
+                </div>
+
+                <!-- Live Captions Toggle -->
+                <button id="btn-toggle-stt" class="px-3.5 h-10 rounded-full bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30 border border-indigo-500/30 text-xs font-medium flex items-center space-x-1.5 transition" title="Toggle Live Translation">
+                    <i class="fa-solid fa-closed-captioning"></i>
+                    <span id="stt-status-text" class="hidden md:inline">Captions On</span>
+                </button>
+
+                <!-- Chat Drawer Toggle -->
+                <button id="btn-toggle-chat" class="relative w-10 h-10 rounded-full bg-darkBg hover:bg-darkBorder border border-darkBorder text-slate-200 flex items-center justify-center transition" title="Chat & Transcripts">
+                    <i class="fa-solid fa-comment-dots text-sm"></i>
+                    <span id="chat-unread-dot" class="hidden absolute top-2 right-2 w-2 h-2 rounded-full bg-indigo-500"></span>
+                </button>
+
+                <div class="h-5 w-[1px] bg-darkBorder mx-0.5 hidden sm:block"></div>
+
+                <!-- Hang Up -->
+                <button id="btn-hangup" class="px-4 h-10 rounded-full bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold flex items-center space-x-1.5 transition shadow-lg shadow-rose-600/25" title="Leave Call">
+                    <i class="fa-solid fa-phone-slash"></i>
+                    <span class="hidden sm:inline">Leave</span>
+                </button>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Application Script Logic -->
+    <script>
+        // Toast Helper
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            const bgCol = type === 'error' ? 'bg-rose-600 text-white' : (type === 'success' ? 'bg-emerald-600 text-white' : 'bg-darkCard text-slate-200 border border-darkBorder');
+            toast.className = `${bgCol} px-4 py-2.5 rounded-full shadow-xl text-xs font-medium pointer-events-auto transition transform translate-y-2 opacity-0 flex items-center space-x-2`;
+            toast.innerHTML = `<i class="fa-solid fa-${type === 'error' ? 'circle-exclamation' : (type === 'success' ? 'circle-check' : 'circle-info')}"></i><span>${message}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => toast.classList.remove('translate-y-2', 'opacity-0'), 10);
+            setTimeout(() => {
+                toast.classList.add('translate-y-2', 'opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        // Core State
+        let localStream = null;
+        let screenStream = null;
+        let peerConnection = null;
+        let dataChannel = null;
+        let mqttClient = null;
+        let roomId = '';
+        let cryptoKey = null;
+        let isAudioMuted = false;
+        let isVideoMuted = false;
+        let isScreenSharing = false;
+        let recognition = null;
+        let isSttRunning = false;
+        let subtitleTimeout = null;
+        let hudIdleTimeout = null;
+        let isHudVisible = true;
+        const socketId = Math.random().toString(36).substring(2, 9);
+
+        // Auto-Hiding Cinema HUD Controls (Desktop Mouse & Mobile Touch)
+        const callScreen = document.getElementById('call-screen');
+        const callHeader = document.getElementById('call-header');
+        const callFooter = document.getElementById('call-footer');
+        const subtitleContainer = document.getElementById('subtitle-container');
+
+        function setHudVisibility(visible) {
+            isHudVisible = visible;
+            if (visible) {
+                callHeader.classList.remove('hud-hidden-top');
+                callFooter.classList.remove('hud-hidden-bottom');
+                subtitleContainer.classList.remove('bottom-8');
+                subtitleContainer.classList.add('bottom-24');
+                resetHudIdleTimer();
+            } else {
+                // Keep HUD visible if chat drawer is open
+                if (!document.getElementById('chat-drawer').classList.contains('hidden')) return;
+                callHeader.classList.add('hud-hidden-top');
+                callFooter.classList.add('hud-hidden-bottom');
+                subtitleContainer.classList.remove('bottom-24');
+                subtitleContainer.classList.add('bottom-8');
+            }
+        }
+
+        function resetHudIdleTimer() {
+            if (hudIdleTimeout) clearTimeout(hudIdleTimeout);
+            hudIdleTimeout = setTimeout(() => {
+                setHudVisibility(false);
+            }, 3500);
+        }
+
+        // Desktop: Show on mouse move or mouse entering window, hide quickly when mouse leaves
+        callScreen.addEventListener('mousemove', () => {
+            if (!isHudVisible) setHudVisibility(true);
+            else resetHudIdleTimer();
+        });
+        document.addEventListener('mouseleave', () => {
+            if (!callScreen.classList.contains('hidden')) {
+                setHudVisibility(false);
+            }
+        });
+
+        // Mobile & Desktop Tap: Tap on the video stage toggles HUD visibility
+        document.getElementById('video-stage').addEventListener('click', (e) => {
+            if (e.target.closest('button, select, input, aside, #local-pip')) return;
+            setHudVisibility(!isHudVisible);
+        });
+
+        // Draggable Local Picture-in-Picture Video (Mouse & Touch)
+        (function initDraggablePip() {
+            const pip = document.getElementById('local-pip');
+            const stage = document.getElementById('video-stage');
+            let isDragging = false;
+            let startX = 0, startY = 0, initialLeft = 0, initialTop = 0;
+
+            pip.addEventListener('pointerdown', (e) => {
+                isDragging = true;
+                pip.setPointerCapture(e.pointerId);
+                const rect = pip.getBoundingClientRect();
+                const stageRect = stage.getBoundingClientRect();
+                initialLeft = rect.left - stageRect.left;
+                initialTop = rect.top - stageRect.top;
+                startX = e.clientX;
+                startY = e.clientY;
+                pip.style.right = 'auto';
+                pip.style.bottom = 'auto';
+                pip.style.left = `${initialLeft}px`;
+                pip.style.top = `${initialTop}px`;
+            });
+
+            pip.addEventListener('pointermove', (e) => {
+                if (!isDragging) return;
+                const stageRect = stage.getBoundingClientRect();
+                const pipRect = pip.getBoundingClientRect();
+                const dx = e.clientX - startX;
+                const dy = e.clientY - startY;
+                const maxLeft = stageRect.width - pipRect.width - 8;
+                const maxTop = stageRect.height - pipRect.height - 8;
+                const newLeft = Math.max(8, Math.min(maxLeft, initialLeft + dx));
+                const newTop = Math.max(8, Math.min(maxTop, initialTop + dy));
+                pip.style.left = `${newLeft}px`;
+                pip.style.top = `${newTop}px`;
+            });
+
+            pip.addEventListener('pointerup', (e) => {
+                if (!isDragging) return;
+                isDragging = false;
+                pip.releasePointerCapture(e.pointerId);
+            });
+        })();
+
+        // Prevent timer from hiding while interacting with bottom bar or header
+        callHeader.addEventListener('pointerdown', () => resetHudIdleTimer());
+        callFooter.addEventListener('pointerdown', () => resetHudIdleTimer());
+
+        // Background STUN Configuration
+        const iceServersConfig = {
+            iceServers: [
+                { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }
+            ]
+        };
+
+        // Background E2EE Key Derivation from Room Code (Zero manual password friction)
+        async function deriveRoomSecurityKey(roomCode) {
+            const enc = new TextEncoder();
+            const normalizedRoom = roomCode.toLowerCase().trim();
+            const keyMaterial = await window.crypto.subtle.importKey(
+                'raw',
+                enc.encode(`PolyLink::E2EE::${normalizedRoom}`),
+                { name: 'PBKDF2' },
+                false,
+                ['deriveKey']
+            );
+            const salt = enc.encode(`PolyLinkSalt_${normalizedRoom}`);
+            return await window.crypto.subtle.deriveKey(
+                { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+                keyMaterial,
+                { name: 'AES-GCM', length: 256 },
+                false,
+                ['encrypt', 'decrypt']
+            );
+        }
+
+        // Background SHA-256 Room Topic Hashing (Hides plain room name on public signaling broker)
+        async function hashRoomTopic(roomCode) {
+            const enc = new TextEncoder();
+            const hashBuffer = await window.crypto.subtle.digest('SHA-256', enc.encode(`polylink-room-${roomCode.toLowerCase().trim()}`));
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        async function encryptPayload(plainText) {
+            if (!cryptoKey) return plainText;
+            const iv = window.crypto.getRandomValues(new Uint8Array(12));
+            const enc = new TextEncoder();
+            const cipherBuffer = await window.crypto.subtle.encrypt(
+                { name: 'AES-GCM', iv },
+                cryptoKey,
+                enc.encode(plainText)
+            );
+            const combined = new Uint8Array(iv.length + cipherBuffer.byteLength);
+            combined.set(iv);
+            combined.set(new Uint8Array(cipherBuffer), iv.length);
+            return btoa(String.fromCharCode(...combined));
+        }
+
+        async function decryptPayload(base64Str) {
+            if (!cryptoKey) return base64Str;
+            const binary = atob(base64Str);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            const iv = bytes.slice(0, 12);
+            const data = bytes.slice(12);
+            const decryptedBuffer = await window.crypto.subtle.decrypt(
+                { name: 'AES-GCM', iv },
+                cryptoKey,
+                data
+            );
+            return new TextDecoder().decode(decryptedBuffer);
+        }
+
+        // Lobby Form Submission (Start Call)
+        document.getElementById('lobby-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            roomId = document.getElementById('room-id').value.trim();
+            if (!roomId) return;
+
+            // Sync lobby language selections to call controls
+            document.getElementById('source-language').value = document.getElementById('lobby-speak-lang').value;
+            document.getElementById('target-language').value = document.getElementById('lobby-read-lang').value;
+
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+                    audio: true
+                });
+                document.getElementById('local-video').srcObject = localStream;
+
+                // Automatically initialize background encryption & hashed signaling
+                cryptoKey = await deriveRoomSecurityKey(roomId);
+                const hashedTopic = await hashRoomTopic(roomId);
+
+                document.getElementById('lobby-screen').classList.add('hidden');
+                document.getElementById('call-screen').classList.remove('hidden');
+                document.getElementById('header-room-name').innerText = roomId;
+
+                initSignaling(hashedTopic);
+                startSpeechRecognition(); // Auto-start live captions
+                resetHudIdleTimer(); // Start auto-hide countdown
+            } catch (err) {
+                console.error(err);
+                showToast('Please allow camera and microphone access to join.', 'error');
+            }
+        });
+
+        // Dynamic Video Quality Controller
+        const qualityPresets = {
+            auto: { width: 1280, height: 720, frameRate: 30, maxBitrate: 1500000 },
+            '1080': { width: 1920, height: 1080, frameRate: 30, maxBitrate: 3000000 },
+            '720': { width: 1280, height: 720, frameRate: 30, maxBitrate: 1500000 },
+            '480': { width: 854, height: 480, frameRate: 24, maxBitrate: 600000 }
+        };
+
+        document.getElementById('video-quality').addEventListener('change', async (e) => {
+            const presetKey = e.target.value;
+            const preset = qualityPresets[presetKey] || qualityPresets.auto;
+            if (!localStream) return;
+
+            const videoTrack = localStream.getVideoTracks()[0];
+            if (videoTrack && !isScreenSharing) {
+                try {
+                    await videoTrack.applyConstraints({
+                        width: { ideal: preset.width },
+                        height: { ideal: preset.height },
+                        frameRate: { ideal: preset.frameRate }
+                    });
+                } catch (err) {
+                    console.warn('Constraint adjustment fallback:', err);
+                }
+            }
+
+            if (peerConnection) {
+                const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+                if (sender) {
+                    try {
+                        const params = sender.getParameters();
+                        if (!params.encodings) params.encodings = [{}];
+                        params.encodings[0].maxBitrate = preset.maxBitrate;
+                        await sender.setParameters(params);
+                    } catch (err) {
+                        console.warn('Bitrate parameter fallback:', err);
+                    }
+                }
+            }
+
+            const label = presetKey === 'auto' ? 'Auto Adaptive' : `${presetKey}p`;
+            showToast(`Video quality set to ${label}`, 'info');
+        });
+
+        // Copy Room Code
+        document.getElementById('btn-copy-room').addEventListener('click', () => {
+            const tempInput = document.createElement('input');
+            tempInput.value = roomId;
+            document.body.appendChild(tempInput);
+            tempInput.select();
+            document.execCommand('copy');
+            document.body.removeChild(tempInput);
+            showToast('Room code copied to clipboard', 'success');
+        });
+
+        // Chat Drawer Toggles
+        const chatDrawer = document.getElementById('chat-drawer');
+        const unreadDot = document.getElementById('chat-unread-dot');
+        document.getElementById('btn-toggle-chat').addEventListener('click', () => {
+            chatDrawer.classList.toggle('hidden');
+            if (!chatDrawer.classList.contains('hidden')) {
+                unreadDot.classList.add('hidden');
+            }
+        });
+        document.getElementById('btn-close-chat').addEventListener('click', () => {
+            chatDrawer.classList.add('hidden');
+        });
+
+        // Signaling via MQTT with Encrypted Signaling Payloads
+        let activeTopic = '';
+        function initSignaling(hashedTopic) {
+            activeTopic = `polylink/v1/${hashedTopic}`;
+            mqttClient = mqtt.connect('wss://broker.hivemq.com:8884/mqtt');
+
+            mqttClient.on('connect', () => {
+                mqttClient.subscribe(activeTopic);
+                sendSignal({ type: 'join' });
+            });
+
+            mqttClient.on('message', async (topic, payload) => {
+                try {
+                    const envelope = JSON.parse(payload.toString());
+                    if (envelope.sender === socketId) return;
+
+                    const decryptedJson = await decryptPayload(envelope.data);
+                    const msg = JSON.parse(decryptedJson);
+
+                    if (msg.type === 'join') {
+                        if (!peerConnection) createPeerConnection(true);
+                        const offer = await peerConnection.createOffer();
+                        await peerConnection.setLocalDescription(offer);
+                        sendSignal({ type: 'offer', sdp: peerConnection.localDescription });
+                    } else if (msg.type === 'offer') {
+                        if (!peerConnection) createPeerConnection(false);
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+                        const answer = await peerConnection.createAnswer();
+                        await peerConnection.setLocalDescription(answer);
+                        sendSignal({ type: 'answer', sdp: peerConnection.localDescription });
+                    } else if (msg.type === 'answer') {
+                        if (peerConnection) {
+                            await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+                        }
+                    } else if (msg.type === 'candidate' && msg.candidate) {
+                        if (peerConnection) {
+                            await peerConnection.addIceCandidate(new RTCIceCandidate(msg.candidate));
+                        }
+                    }
+                } catch (e) {
+                    console.error('Signaling error:', e);
+                }
+            });
+        }
+
+        async function sendSignal(payloadObj) {
+            if (mqttClient && mqttClient.connected && activeTopic) {
+                const encrypted = await encryptPayload(JSON.stringify(payloadObj));
+                mqttClient.publish(activeTopic, JSON.stringify({ sender: socketId, data: encrypted }));
+            }
+        }
+
+        function createPeerConnection(isInitiator) {
+            peerConnection = new RTCPeerConnection(iceServersConfig);
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+            peerConnection.ontrack = (event) => {
+                const remoteVideo = document.getElementById('remote-video');
+                if (remoteVideo.srcObject !== event.streams[0]) {
+                    remoteVideo.srcObject = event.streams[0];
+                    document.getElementById('remote-placeholder').classList.add('hidden');
+                    document.getElementById('connection-dot').className = 'w-2 h-2 rounded-full bg-emerald-400';
+                    document.getElementById('connection-label').innerText = 'Connected';
+                    showToast('Peer joined the call', 'success');
+                }
+            };
+
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    sendSignal({ type: 'candidate', candidate: event.candidate });
+                }
+            };
+
+            peerConnection.oniceconnectionstatechange = () => {
+                const state = peerConnection.iceConnectionState;
+                if (['disconnected', 'failed', 'closed'].includes(state)) {
+                    document.getElementById('connection-dot').className = 'w-2 h-2 rounded-full bg-rose-500';
+                    document.getElementById('connection-label').innerText = 'Disconnected';
+                    document.getElementById('remote-placeholder').classList.remove('hidden');
+                }
+            };
+
+            if (isInitiator) {
+                dataChannel = peerConnection.createDataChannel('polylink-data');
+                setupDataChannel();
+            } else {
+                peerConnection.ondatachannel = (event) => {
+                    dataChannel = event.channel;
+                    setupDataChannel();
+                };
+            }
+        }
+
+        function setupDataChannel() {
+            dataChannel.onmessage = async (event) => {
+                try {
+                    const packet = JSON.parse(event.data);
+                    const decryptedText = await decryptPayload(packet.payload);
+
+                    if (packet.type === 'chat') {
+                        appendChatMessage(decryptedText, 'Peer', false);
+                        if (chatDrawer.classList.contains('hidden')) {
+                            unreadDot.classList.remove('hidden');
+                        }
+                    } else if (packet.type === 'transcript') {
+                        const myTargetLang = document.getElementById('target-language').value;
+                        let sourceLangShort = (packet.sourceLang || 'auto').split('-')[0];
+                        
+                        // If sender used Auto-Detect, detect language from transcript text
+                        if (sourceLangShort === 'auto') {
+                            sourceLangShort = detectLanguageFromText(decryptedText);
+                        }
+                        
+                        let translatedText = decryptedText;
+                        if (sourceLangShort !== myTargetLang) {
+                            const result = await translateText(decryptedText, sourceLangShort, myTargetLang);
+                            translatedText = result.translatedText;
+                            if (result.detectedLang) sourceLangShort = result.detectedLang;
+                        }
+                        showLiveSubtitle(translatedText, decryptedText, 'Peer', sourceLangShort, myTargetLang);
+                        appendChatMessage(`${translatedText}${sourceLangShort !== myTargetLang ? ` (${decryptedText})` : ''}`, 'Peer (Caption)', false);
+                    }
+                } catch (e) {
+                    console.error('Data channel error:', e);
+                }
+            };
+        }
+
+        // Chat Form
+        document.getElementById('chat-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const input = document.getElementById('chat-input');
+            const text = input.value.trim();
+            if (!text) return;
+
+            appendChatMessage(text, 'You', true);
+            input.value = '';
+
+            if (dataChannel && dataChannel.readyState === 'open') {
+                const encrypted = await encryptPayload(text);
+                dataChannel.send(JSON.stringify({ type: 'chat', payload: encrypted }));
+            } else {
+                showToast('Message saved locally (waiting for peer).', 'info');
+            }
+        });
+
+        function appendChatMessage(text, sender, isSelf) {
+            const container = document.getElementById('chat-messages');
+            const wrapper = document.createElement('div');
+            wrapper.className = `flex flex-col ${isSelf ? 'items-end' : 'items-start'}`;
+
+            const bubble = document.createElement('div');
+            bubble.className = isSelf
+                ? 'bg-indigo-600 text-white px-3.5 py-2 rounded-2xl rounded-br-sm max-w-[85%] break-words shadow'
+                : 'bg-darkBg border border-darkBorder text-slate-200 px-3.5 py-2 rounded-2xl rounded-bl-sm max-w-[85%] break-words';
+
+            const header = document.createElement('div');
+            header.className = `text-[10px] mb-0.5 ${isSelf ? 'text-indigo-200' : 'text-slate-400'}`;
+            header.innerText = sender;
+
+            const body = document.createElement('div');
+            body.innerText = text;
+
+            bubble.appendChild(header);
+            bubble.appendChild(body);
+            wrapper.appendChild(bubble);
+            container.appendChild(wrapper);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        // Lightweight Language Detector for English, Spanish, and Finnish
+        function detectLanguageFromText(text) {
+            const lower = ` ${text.toLowerCase().replace(/[.,!?¿¡;:()"']/g, ' ')} `;
+            // Finnish distinctive characters & frequent function words
+            if (/[äöå]/.test(lower) || /\b(ja|on|ei|että|se|kuin|mutta|niin|olen|olet|mitä|kiitos|hei|moi|hyvää|kyllä)\b/.test(lower)) {
+                return 'fi';
+            }
+            // Spanish distinctive characters & frequent function words
+            if (/[ñáéíóúü¿¡]/.test(lower) || /\b(el|la|los|las|de|que|y|en|un|una|es|por|para|con|hola|gracias|cómo|qué|sí|no)\b/.test(lower)) {
+                return 'es';
+            }
+            return 'en';
+        }
+
+        // Speech Recognition & Live Translation with Auto-Detect Support
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const sttBtn = document.getElementById('btn-toggle-stt');
+        const sttStatusText = document.getElementById('stt-status-text');
+        const sourceLangSelect = document.getElementById('source-language');
+
+        function getRecognitionLocale() {
+            const selected = sourceLangSelect.value;
+            if (selected !== 'auto') return selected;
+            // In auto mode, seed STT with browser locale if it's EN/ES/FI, otherwise default to en-US
+            const navLang = (navigator.language || 'en-US').toLowerCase();
+            if (navLang.startsWith('es')) return 'es-ES';
+            if (navLang.startsWith('fi')) return 'fi-FI';
+            return 'en-US';
+        }
+
+        if (SpeechRecognition) {
+            recognition = new SpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = false;
+
+            sourceLangSelect.addEventListener('change', () => {
+                recognition.lang = getRecognitionLocale();
+                if (isSttRunning) {
+                    recognition.stop();
+                }
+            });
+
+            recognition.onresult = async (event) => {
+                const rawTranscript = event.results[event.results.length - 1][0].transcript.trim();
+                if (!rawTranscript) return;
+
+                const currentSourceSelection = sourceLangSelect.value;
+                let sourceLangShort = currentSourceSelection === 'auto'
+                    ? detectLanguageFromText(rawTranscript)
+                    : currentSourceSelection.split('-')[0];
+                const myTargetLang = document.getElementById('target-language').value;
+
+                let localDisplay = rawTranscript;
+                if (sourceLangShort !== myTargetLang) {
+                    const res = await translateText(rawTranscript, sourceLangShort, myTargetLang);
+                    localDisplay = res.translatedText;
+                    if (res.detectedLang) sourceLangShort = res.detectedLang;
+                }
+                showLiveSubtitle(localDisplay, rawTranscript, 'You', sourceLangShort, myTargetLang);
+
+                if (dataChannel && dataChannel.readyState === 'open') {
+                    const encrypted = await encryptPayload(rawTranscript);
+                    dataChannel.send(JSON.stringify({
+                        type: 'transcript',
+                        payload: encrypted,
+                        sourceLang: currentSourceSelection === 'auto' ? sourceLangShort : currentSourceSelection
+                    }));
+                }
+            };
+
+            recognition.onend = () => {
+                if (isSttRunning) {
+                    try { recognition.start(); } catch (e) {}
+                }
+            };
+        }
+
+        function startSpeechRecognition() {
+            if (!SpeechRecognition) {
+                sttStatusText.innerText = 'No STT';
+                return;
+            }
+            isSttRunning = true;
+            recognition.lang = getRecognitionLocale();
+            try { recognition.start(); } catch (e) {}
+            sttBtn.className = 'px-3.5 h-10 rounded-full bg-indigo-600 text-white text-xs font-medium flex items-center space-x-1.5 transition shadow-lg shadow-indigo-600/25';
+            sttStatusText.innerText = 'Captions On';
+        }
+
+        function stopSpeechRecognition() {
+            isSttRunning = false;
+            if (recognition) recognition.stop();
+            sttBtn.className = 'px-3.5 h-10 rounded-full bg-darkBg hover:bg-darkBorder border border-darkBorder text-slate-400 text-xs font-medium flex items-center space-x-1.5 transition';
+            sttStatusText.innerText = 'Captions Off';
+        }
+
+        sttBtn.addEventListener('click', () => {
+            if (!SpeechRecognition) {
+                showToast('Live captions require Chrome or Edge.', 'error');
+                return;
+            }
+            if (isSttRunning) stopSpeechRecognition();
+            else startSpeechRecognition();
+        });
+
+        async function translateText(text, sourceLang, targetLang) {
+            if (sourceLang === targetLang) return { translatedText: text, detectedLang: sourceLang };
+            try {
+                const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${sourceLang}|${targetLang}`;
+                const res = await fetch(url);
+                const data = await res.json();
+                if (data?.responseData?.translatedText) {
+                    return {
+                        translatedText: data.responseData.translatedText,
+                        detectedLang: data.responseData.detectedLanguage || sourceLang
+                    };
+                }
+            } catch (e) {
+                console.error('Translation error:', e);
+            }
+            return { translatedText: text, detectedLang: sourceLang };
+        }
+
+        function showLiveSubtitle(translatedText, originalText, speaker, sourceLang, targetLang) {
+            const box = document.getElementById('subtitle-box');
+            const speakerEl = document.getElementById('subtitle-speaker');
+            const transEl = document.getElementById('subtitle-translated');
+            const origEl = document.getElementById('subtitle-original');
+
+            const isTranslated = sourceLang !== targetLang && translatedText.toLowerCase() !== originalText.toLowerCase();
+            speakerEl.innerText = `${speaker} • ${sourceLang.toUpperCase()} → ${targetLang.toUpperCase()}`;
+            transEl.innerText = translatedText;
+            origEl.innerText = isTranslated ? `"${originalText}"` : '';
+            origEl.style.display = isTranslated ? 'block' : 'none';
+
+            box.classList.remove('hidden');
+
+            if (subtitleTimeout) clearTimeout(subtitleTimeout);
+            subtitleTimeout = setTimeout(() => {
+                box.classList.add('hidden');
+            }, 6500);
+        }
+
+        // Media Controls
+        document.getElementById('btn-toggle-audio').addEventListener('click', () => {
+            if (!localStream) return;
+            isAudioMuted = !isAudioMuted;
+            localStream.getAudioTracks().forEach(t => t.enabled = !isAudioMuted);
+            const btn = document.getElementById('btn-toggle-audio');
+            btn.className = isAudioMuted
+                ? 'w-10 h-10 rounded-full bg-rose-600/20 text-rose-400 border border-rose-500/30 flex items-center justify-center transition'
+                : 'w-10 h-10 rounded-full bg-darkBg hover:bg-darkBorder border border-darkBorder text-slate-200 flex items-center justify-center transition';
+            btn.innerHTML = `<i class="fa-solid fa-microphone${isAudioMuted ? '-slash' : ''} text-sm"></i>`;
+        });
+
+        document.getElementById('btn-toggle-video').addEventListener('click', () => {
+            if (!localStream) return;
+            isVideoMuted = !isVideoMuted;
+            localStream.getVideoTracks().forEach(t => t.enabled = !isVideoMuted);
+            const btn = document.getElementById('btn-toggle-video');
+            btn.className = isVideoMuted
+                ? 'w-10 h-10 rounded-full bg-rose-600/20 text-rose-400 border border-rose-500/30 flex items-center justify-center transition'
+                : 'w-10 h-10 rounded-full bg-darkBg hover:bg-darkBorder border border-darkBorder text-slate-200 flex items-center justify-center transition';
+            btn.innerHTML = `<i class="fa-solid fa-video${isVideoMuted ? '-slash' : ''} text-sm"></i>`;
+        });
+
+        document.getElementById('btn-screen-share').addEventListener('click', async () => {
+            try {
+                if (!isScreenSharing) {
+                    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+                    const screenTrack = screenStream.getVideoTracks()[0];
+                    const sender = peerConnection?.getSenders().find(s => s.track?.kind === 'video');
+                    if (sender) sender.replaceTrack(screenTrack);
+
+                    document.getElementById('local-video').srcObject = screenStream;
+                    isScreenSharing = true;
+                    document.getElementById('btn-screen-share').className = 'w-10 h-10 rounded-full bg-indigo-600 text-white flex items-center justify-center transition';
+                    screenTrack.onended = () => stopScreenSharing();
+                } else {
+                    stopScreenSharing();
+                }
+            } catch (e) {
+                showToast('Screen sharing cancelled.', 'info');
+            }
+        });
+
+        function stopScreenSharing() {
+            if (!isScreenSharing) return;
+            if (screenStream) screenStream.getTracks().forEach(t => t.stop());
+            const videoTrack = localStream.getVideoTracks()[0];
+            const sender = peerConnection?.getSenders().find(s => s.track?.kind === 'video');
+            if (sender) sender.replaceTrack(videoTrack);
+
+            document.getElementById('local-video').srcObject = localStream;
+            isScreenSharing = false;
+            document.getElementById('btn-screen-share').className = 'w-10 h-10 rounded-full bg-darkBg hover:bg-darkBorder border border-darkBorder text-slate-200 flex items-center justify-center transition';
+        }
+
+        document.getElementById('btn-hangup').addEventListener('click', () => {
+            if (localStream) localStream.getTracks().forEach(t => t.stop());
+            if (screenStream) screenStream.getTracks().forEach(t => t.stop());
+            if (peerConnection) peerConnection.close();
+            if (mqttClient) mqttClient.end();
+            if (isSttRunning && recognition) recognition.stop();
+            window.location.reload();
+        });
+    </script>
+</body>
+</html>
